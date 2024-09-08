@@ -1,0 +1,151 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >-
+  Order Processing Application
+
+Transform: AWS::Serverless-2016-10-31
+
+Resources:
+  ProcessAPI:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: ProcessAPI
+      StageName: Prod
+      DefinitionBody:
+        swagger: "2.0"
+        info:
+          title: My API
+          version: "1.0"
+        paths:
+          /orders:
+            options:
+              summary: CORS support
+              description: "CORS support for /orders"
+              responses:
+                '200':
+                  description: "CORS preflight response"
+                  headers:
+                    Access-Control-Allow-Headers:
+                      type: string
+                    Access-Control-Allow-Methods:
+                      type: string
+                    Access-Control-Allow-Origin:
+                      type: string
+                  schema:
+                    type: string
+              x-amazon-apigateway-integration:
+                type: mock
+                requestTemplates:
+                  application/json: '{"statusCode": 200}'
+                passthroughBehavior: never
+                contentHandling: CONVERT_TO_TEXT
+              x-amazon-apigateway-cors:
+                allowOrigins:
+                  - '*'
+                allowHeaders:
+                  - Content-Type
+                  - X-Amz-Date
+                  - Authorization
+                  - X-Api-Key
+                  - X-Amz-Security-Token
+                allowMethods:
+                  - POST
+                  - OPTIONS
+            post:
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                uri: !Sub "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${OrderStoringFunction.Arn}/invocations"
+              responses:
+                '200':
+                  description: "Order processed successfully"
+                  headers:
+                    Access-Control-Allow-Headers:
+                      type: string
+                    Access-Control-Allow-Methods:
+                      type: string
+                    Access-Control-Allow-Origin:
+                      type: string
+              x-amazon-apigateway-cors:
+                allowOrigins:
+                  - '*'
+                allowHeaders:
+                  - Content-Type
+                  - X-Amz-Date
+                  - Authorization
+                  - X-Api-Key
+                  - X-Amz-Security-Token
+                allowMethods:
+                  - POST
+                  - OPTIONS
+
+  OrderProcessingFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/order-processing.handler
+      Runtime: nodejs20.x
+      MemorySize: 128
+      Timeout: 10
+      Description: Lambda function that processes orders and sends them to an SQS queue.
+      Policies:
+        - SQSSendMessagePolicy:
+            QueueName: !GetAtt OrderQueue.QueueName
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref OrderQueue
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            RestApiId: !Ref ProcessAPI
+            Path: /orders
+            Method: post
+
+  OrderQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: OrderProcessingQueue
+
+  OrderStoringFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/order-storing.handler
+      Runtime: nodejs20.x
+      MemorySize: 128
+      Timeout: 10
+      Description: Lambda function that stores orders in DynamoDB.
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref OrdersTable
+      Environment:
+        Variables:
+          ORDERS_TABLE_NAME: !Ref OrdersTable
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OrderQueue.Arn
+            BatchSize: 5
+
+  OrdersTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: Orders
+      PrimaryKey:
+        Name: OrderId
+        Type: String
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+Outputs:
+  OrderQueueUrl:
+    Description: "URL of the order queue"
+    Value: !Ref OrderQueue
+
+  OrderProcessingFunctionArn:
+    Description: "ARN of the Order Processing Lambda Function"
+    Value: !GetAtt OrderProcessingFunction.Arn
+
+  ApiUrl:
+    Description: "URL of the API Gateway"
+    Value: !Sub "https://${ProcessAPI}.execute-api.${AWS::Region}.amazonaws.com/Prod"
